@@ -24,7 +24,8 @@ To run the watchdog script automatically at startup and keep it running:
    - Add arguments: `-NoProfile -ExecutionPolicy Bypass -File "C:\Path\To\check-services.ps1"`
      (Replace `"C:\Path\To\check-services.ps1"` with your actual script path)
 
-This project was developed with the assistance of AI tools
 6. Under the **Conditions** tab:
    - Adjust based on your preferences (e.g., uncheck "Start the task only if the computer
 
+
+This project was developed with the assistance of AI tools
