@@ -1,0 +1,21 @@
+# Ignore PowerShell backup and temp files
+*.bak
+*.tmp
+
+# Ignore logs
+*.log
+
+# Ignore VSCode settings
+.vscode/
+
+# Ignore system files
+Thumbs.db
+.DS_Store
+
+# Ignore compiled Python files if you have any scripts
+__pycache__/
+*.pyc
+
+# Ignore any user-specific config files
+*.user
+*.suo
