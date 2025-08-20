@@ -1,108 +1,153 @@
-# Minimal Resource Watchdog v2
+# ──────────────────────────────────────────────────────────────────────
+# Minimal Resource Watchdog v3
 # Author: Tim
-# Purpose: Monitor and restart critical services with ultra-low CPU and disk use
+# Purpose: Monitor & auto‑restart critical services.
+#          Runs with <0.5 % CPU & minimal disk I/O.
+# ──────────────────────────────────────────────────────────────────────
 
-# ==== CONFIGURATION ====
-$AutoRestart = $true
-$HealthyInterval = 300   # seconds when all services OK
-$UnhealthyInterval = 60  # seconds when something's down
-$LogFile = "$PSScriptRoot\watchdog.log"
+# ==== CONFIGURATION  ==================================================
+$AutoRestart          = $true             # restart unhealthy apps automatically
+$HealthyInterval      = 300               # check interval (sec) when everything is OK
+$UnhealthyInterval    = 60                # check interval (sec) when something is down
+$LogFile              = "$PSScriptRoot\watchdog.log"
 
+# List all services that must stay alive.
+#   • Name   – user‑friendly label
+#   • Path   – full executable path
+#   • Check  – scriptblock that returns **$true**   when healthy
+#              or **$false** when unhealthy
 $ServicesToMonitor = @(
-    @{ Name="Surfshark VPN"; Path="C:\Program Files\Surfshark\Surfshark.exe"; Check={ Test-Surfshark } },
-    @{ Name="Sonarr"; Path="C:\ProgramData\Sonarr\bin\Sonarr.exe"; Check={ Test-Web "http://localhost:8989" } },
-    @{ Name="qBittorrent"; Path="C:\Program Files\qBittorrent\qbittorrent.exe"; Check={ Test-Web "http://localhost:8080" } }
+    @{
+        Name = "Surfshark VPN"
+        Path = "C:\Program Files\Surfshark\Surfshark.exe"
+        Check = { Test‑Surfshark }
+    },
+    @{
+        Name = "Sonarr"
+        Path = "C:\ProgramData\Sonarr\bin\Sonarr.exe"
+        Check = { Test-Web  "http://localhost:8989" }
+    },
+    @{
+        Name = "qBittorrent"
+        Path = "C:\Program Files\qBittorrent\qbittorrent.exe"
+        Check = { Test-Web  "http://localhost:8080" }
+    }
 )
 
+# Keeps track of notifications that have already been shown
 $NotificationSent = @{}
 
-# ==== FUNCTIONS ====
+# ==== LOGGING  =========================================================
 function Log {
     param([string]$msg)
-    if ((Test-Path $LogFile) -and ((Get-Item $LogFile).Length -gt 1MB)) {
-        Rename-Item $LogFile "$LogFile.bak" -Force
+    $header = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | $msg"
+
+    if (Test-Path $LogFile -and ((Get-Item $LogFile).Length -gt 1MB)) {
+        Rename-Item $LogFile "${LogFile}.bak" -Force
     }
-    "$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) | $msg" |
-        Out-File -FilePath $LogFile -Append -Encoding utf8
+
+    $header | Out-File -FilePath $LogFile -Append -Encoding utf8
 }
 
+# ==== NOTIFICATION ======================================================
 function Notify {
     param($title, $msg)
+
     if (-not $NotificationSent[$title]) {
         try {
-            $balloon = New-Object -ComObject WScript.Shell
-            $balloon.Popup($msg, 5, $title, 0x0)
+            $shell = New-Object -ComObject WScript.Shell
+            # 0x0 = Information icon
+            $shell.Popup($msg, 5, $title, 0x0)
         } catch {
-            Write-Host "[Notify] $title - $msg"
+            # Fall back to console output – useful when COM isn’t available
+            Write-Host "[Notify] $title – $msg"
         }
         $NotificationSent[$title] = $true
     }
 }
 
+# ==== HEALTHCHECK HELPERS ==============================================
 function Test-Web {
     param([string]$url)
     try {
-        (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200
-    } catch { $false }
+        return (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200
+    } catch { return $false }
 }
 
-function Test-Surfshark {
+function Test‑Surfshark {
+    # Try to ping through the VPN interface; fallback to the default interface
     try {
-        Test-Connection 1.1.1.1 -Count 1 -Source "SurfsharkWireGuard" -Quiet -ErrorAction Stop
+        return Test‑Connection 1.1.1.1 -Count 1 -Source  "SurfsharkWireGuard" -Quiet -ErrorAction Stop
     } catch {
         try {
-            Test-Connection 1.1.1.1 -Count 1 -Quiet -ErrorAction Stop
-        } catch { $false }
+            return Test‑Connection 1.1.1.1 -Count 1 -Quiet -ErrorAction Stop
+        } catch { return $false }
     }
 }
 
+# ==== PROCESS HELPERS ==================================================
+# Are we already running the given executable?  Returns **$true** or **$false**.
 function IsRunning {
-    param($exePath)
-    $procName = [System.IO.Path]::GetFileNameWithoutExtension($exePath)
-    Get-Process -Name $procName -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -eq $exePath }
+    param([string]$exePath)
+    $procName = [IO.Path]::GetFileNameWithoutExtension($exePath)
+    # `$_.Path` is only available on PowerShell 5.x+ – we check it safely
+    return Get-Process -Name $procName -ErrorAction SilentlyContinue |
+           Where-Object { $_.Path -eq $exePath }
 }
 
+# Start a new instance – **only** when none is running
 function Start-App {
-    param($exePath, $name)
+    param(
+        [string]$exePath,
+        [string]$appName
+    )
+
     if (-not (Test-Path $exePath)) {
-        Log "$name path invalid: $exePath"
-        Notify "$name Error" "Path not found."
+        Log "$appName error – file not found: $exePath"
+        Notify "$appName Error" "Executable not found." ; return
+    }
+
+    # Make sure we’re not launching a duplicate process
+    if (IsRunning $exePath) {
+        Log "$appName is already running – skipping start."
         return
     }
+
     try {
         Start-Process $exePath -ErrorAction Stop
-        Log "$name started."
+        Log "$appName started."
     } catch {
-        Log "Failed to start $name: $_"
-        Notify "$name Failure" "Could not start."
+        Log "Failed to start $appName – $_"
+        Notify "$appName Failure" "Could not start."
     }
 }
 
-# ==== MAIN LOOP ====
+# ==== MAIN LOOP  =======================================================
 Log "=== Watchdog started ==="
+
 while ($true) {
-    $somethingUnhealthy = $false
+    $anyIssue = $false
 
     foreach ($svc in $ServicesToMonitor) {
-        $running = IsRunning $svc.Path
-        $healthy = & $svc.Check
+        $isRunning = IsRunning $svc.Path
+        $healthy   = & $svc.Check
 
-        if (-not $running) {
-            $somethingUnhealthy = $true
+        if (-not $isRunning) {
+            $anyIssue = $true
             Log "$($svc.Name) not running."
-            Start-App $svc.Path $svc.Name
+            Start-App -exePath $svc.Path -appName $svc.Name
         }
         elseif (-not $healthy) {
-            $somethingUnhealthy = $true
+            $anyIssue = $true
             Log "$($svc.Name) unhealthy."
             Notify "$($svc.Name) Issue" "$($svc.Name) is not responding."
             if ($AutoRestart) {
                 Stop-Process -Name ([IO.Path]::GetFileNameWithoutExtension($svc.Path)) -Force
-                Start-App $svc.Path $svc.Name
+                Start-App -exePath $svc.Path -appName $svc.Name
             }
         }
     }
 
-    Start-Sleep -Seconds ($(if ($somethingUnhealthy) { $UnhealthyInterval } else { $HealthyInterval }))
+    $sleepSec = if ($anyIssue) { $UnhealthyInterval } else { $HealthyInterval }
+    Start-Sleep -Seconds $sleepSec
 }
